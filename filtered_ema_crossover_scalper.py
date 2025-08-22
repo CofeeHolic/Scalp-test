@@ -27,8 +27,8 @@ import numpy as np
 # ==============================================================================
 TICKERS = ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS']
 NIFTY_TICKER = '^NSEI'
-START_DATE = '2025-08-11' # Use a recent date for 5m/60m data availability
-END_DATE = '2025-08-16'
+START_DATE = '2025-08-01'
+END_DATE = '2025-08-22'
 INTERVAL_5M = '5m'
 INTERVAL_60M = '60m'
 
@@ -39,7 +39,8 @@ RSI_PERIOD = 14
 RSI_LEVEL = 50
 VOLUME_SMA_PERIOD = 20
 NIFTY_HTF_EMA_PERIOD = 50
-RISK_REWARD_RATIO = 1.0 # Conservative 1:1 R:R
+RISK_REWARD_RATIO = 2.0 # Target 1:2 R:R
+ADX_THRESHOLD = 20 # ADX level to confirm trend strength
 
 # ==============================================================================
 # 2. DATA FETCHING & PREPARATION
@@ -81,6 +82,7 @@ def prepare_data(data_5m, data_60m, tickers, nifty_ticker):
         stock_5m_df['EMA_slow'] = ta.ema(stock_5m_df['Close'], length=SLOW_EMA_PERIOD)
         stock_5m_df['RSI'] = ta.rsi(stock_5m_df['Close'], length=RSI_PERIOD)
         stock_5m_df['Volume_SMA'] = ta.sma(stock_5m_df['Volume'], length=VOLUME_SMA_PERIOD)
+        stock_5m_df.ta.adx(length=14, append=True) # Adds ADX_14, DMP_14, DMN_14 columns
 
         # --- Align Nifty HTF trend with the 5-min stock data ---
         # Reindex the 1-hour Nifty trend to the 5-min index and forward-fill
@@ -148,6 +150,7 @@ def run_backtest(data, ticker):
 
             # --- Filter Conditions for LONG ---
             if (long_crossover and
+                candle['ADX_14'] > ADX_THRESHOLD and
                 candle['Nifty_HTF_Uptrend'] and
                 candle['RSI'] > RSI_LEVEL and
                 candle['Volume'] > candle['Volume_SMA']):
@@ -165,6 +168,7 @@ def run_backtest(data, ticker):
 
             # --- Filter Conditions for SHORT ---
             if (short_crossover and
+                candle['ADX_14'] > ADX_THRESHOLD and
                 not candle['Nifty_HTF_Uptrend'] and
                 candle['RSI'] < RSI_LEVEL and
                 candle['Volume'] > candle['Volume_SMA']):
