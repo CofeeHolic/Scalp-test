@@ -225,8 +225,8 @@ if __name__ == '__main__':
         # General parameters
         TICKERS = ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS']
         NIFTY_TICKER = '^NSEI'
-        START_DATE = '2025-08-01'
-        END_DATE = '2025-08-22'
+        START_DATE = '2025-07-01'
+        END_DATE = '2025-08-16'
 
         # Fetch data based on required intervals
         all_tickers_list = list(set(TICKERS + [NIFTY_TICKER]))
