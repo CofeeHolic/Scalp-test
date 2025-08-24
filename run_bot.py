@@ -1,19 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Master Trading Bot Controller
+Master Trading Bot Controller (Upgraded)
 
 This script acts as the "brain" for the algorithmic trading system.
-Its purpose is to automatically analyze the market conditions and then
+Its purpose is to automatically analyze market conditions and then
 execute the appropriate trading strategy using the main_engine.py.
 
-This script performs the following steps:
-1.  Fetches the latest 1-hour data for the Nifty 50 index.
-2.  Calculates the ADX (Average Directional Index) to measure trend strength.
-3.  Based on the ADX value, it decides if the market is TRENDING, RANGING, or INDECISIVE.
-4.  It then calls the `main_engine.py` script as a subprocess, passing in the
-    correct strategy name (`trend_follower` or `mean_reversion`) based on its analysis.
+UPGRADE: This version now detects the DIRECTION of the trend (Bullish/Bearish)
+and instructs the engine to only take trades in that direction.
 
-This creates a fully automated system that adapts to changing market conditions.
+This creates a highly specialized system:
+- Choppy Market -> Mean Reversion Strategy
+- Bullish Trend -> Trend Following Strategy (Longs Only)
+- Bearish Trend -> Trend Following Strategy (Shorts Only)
 """
 
 import yfinance as yf
@@ -24,75 +23,91 @@ import sys
 
 # --- Configuration ---
 NIFTY_TICKER = '^NSEI'
-ADX_THRESHOLD_TRENDING = 25  # ADX value above which we consider the market to be trending
-ADX_THRESHOLD_RANGING = 20   # ADX value below which we consider the market to be ranging
+ADX_THRESHOLD_TRENDING = 25
+ADX_THRESHOLD_RANGING = 20
+TREND_EMA_PERIOD = 50 # EMA period on 1-hour chart to determine trend direction
 
 def analyze_market_regime():
     """
-    Analyzes the current market regime by calculating the ADX on Nifty's 1-hour chart.
+    Analyzes market regime and trend direction.
 
     Returns:
-        str: The determined market regime ('trending', 'ranging', or 'indecisive').
+        A tuple: (regime, direction)
+        - regime (str): 'trending', 'ranging', or 'indecisive'.
+        - direction (str): 'bullish', 'bearish', or 'none'.
     """
-    print("--- Analyzing Market Regime ---")
+    print("--- Analyzing Market Regime and Direction ---")
     try:
-        # Fetch the last ~100 hours of data to ensure enough data for ADX calculation
         nifty_data = yf.download(
-            tickers=NIFTY_TICKER,
-            period='5d',  # 5 days should give enough 1-hour candles
-            interval='60m',
-            auto_adjust=True,
-            progress=False
+            tickers=NIFTY_TICKER, period='30d', interval='60m',
+            auto_adjust=True, progress=False
         )
         if nifty_data.empty:
-            print("Warning: Could not fetch Nifty data for analysis.")
-            return 'indecisive'
+            print("Warning: Could not fetch Nifty data.")
+            return 'indecisive', 'none'
 
-        # Standardize columns to handle potential MultiIndex from yfinance
         if isinstance(nifty_data.columns, pd.MultiIndex):
             nifty_data.columns = nifty_data.columns.droplevel(1)
 
-        # Calculate ADX
+        # --- Calculate Indicators for Analysis ---
         nifty_data.ta.adx(length=14, append=True)
+        nifty_data['EMA_trend'] = ta.ema(nifty_data['Close'], length=TREND_EMA_PERIOD)
 
-        # Get the latest ADX value
+        # Drop rows with NaN values that are created by the indicators
+        nifty_data.dropna(inplace=True)
+        if nifty_data.empty:
+            print("Warning: Not enough data for analysis after indicator calculation.")
+            return 'indecisive', 'none'
+
         latest_adx = nifty_data['ADX_14'].iloc[-1]
-        print(f"Latest Nifty ADX (1-hour): {latest_adx:.2f}")
+        latest_close = nifty_data['Close'].iloc[-1]
+        latest_ema = nifty_data['EMA_trend'].iloc[-1]
 
-        # Determine the regime
+        print(f"Latest Nifty ADX (1-hour): {latest_adx:.2f}")
+        print(f"Latest Nifty Close: {latest_close:.2f}, EMA({TREND_EMA_PERIOD}): {latest_ema:.2f}")
+
+        # --- Determine Regime and Direction ---
+        regime = 'indecisive'
+        direction = 'none'
+
         if latest_adx > ADX_THRESHOLD_TRENDING:
-            print("Conclusion: Market is TRENDING.")
-            return 'trending'
+            regime = 'trending'
+            if latest_close > latest_ema:
+                direction = 'bullish'
+                print("Conclusion: Market is in a BULLISH TREND.")
+            else:
+                direction = 'bearish'
+                print("Conclusion: Market is in a BEARISH TREND.")
         elif latest_adx < ADX_THRESHOLD_RANGING:
+            regime = 'ranging'
             print("Conclusion: Market is RANGING/CHOPPY.")
-            return 'ranging'
         else:
             print("Conclusion: Market is INDECISIVE.")
-            return 'indecisive'
+
+        return regime, direction
 
     except Exception as e:
         print(f"An error occurred during market analysis: {e}")
-        return 'indecisive'
+        return 'indecisive', 'none'
 
-def run_strategy(strategy_name):
+def run_strategy(strategy_name, direction=None):
     """
-    Executes the main_engine.py with the specified strategy using a subprocess.
+    Executes the main_engine.py with the specified strategy and optional direction.
     """
     command = [
-        sys.executable,  # Use the same python executable that is running this script
+        sys.executable,
         'main_engine.py',
         '--strategy',
         strategy_name
     ]
+    # Add the direction argument only if it's specified (for trend_follower)
+    if direction:
+        command.extend(['--direction', direction])
 
-    print(f"\n--- Executing Strategy: {strategy_name} ---")
+    print(f"\n--- Executing Strategy: {strategy_name} (Direction: {direction or 'N/A'}) ---")
     try:
-        # We use subprocess.run to execute the command and stream the output
         process = subprocess.run(
-            command,
-            check=True,       # Raise an exception if the command returns a non-zero exit code
-            capture_output=True, # Capture stdout and stderr
-            text=True         # Decode stdout/stderr as text
+            command, check=True, capture_output=True, text=True
         )
         print("\n--- Main Engine Output ---")
         print(process.stdout)
@@ -101,23 +116,17 @@ def run_strategy(strategy_name):
             print(process.stderr)
         print("--------------------------")
 
-    except FileNotFoundError:
-        print(f"Error: 'main_engine.py' not found. Make sure it's in the same directory.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing main_engine.py for strategy '{strategy_name}':")
-        print(e.stdout)
-        print(e.stderr)
     except Exception as e:
         print(f"An unexpected error occurred while running the strategy: {e}")
 
 
 if __name__ == '__main__':
     # Step 1: Analyze the market
-    regime = analyze_market_regime()
+    regime, direction = analyze_market_regime()
 
     # Step 2: Select and run the appropriate strategy
     if regime == 'trending':
-        run_strategy('trend_follower')
+        run_strategy('trend_follower', direction=direction)
     elif regime == 'ranging':
         run_strategy('mean_reversion')
     else:

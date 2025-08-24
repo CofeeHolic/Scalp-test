@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Professional Backtesting Engine
+Professional Backtesting Engine (Upgraded)
 
 This script serves as a modular backtesting engine that can run various
 trading strategies defined in external JSON configuration files.
 
-It has been upgraded to include capital and position sizing logic for
-more realistic backtest results.
-
-To run, use the command line:
-python main_engine.py --strategy <strategy_name>
+UPGRADE: This version now accepts a `--direction` argument to allow the
+trend-following strategy to be restricted to 'longs only' or 'shorts only'.
 """
 
 import yfinance as yf
@@ -95,43 +92,42 @@ def prepare_data(data_store, config, tickers, nifty_ticker):
 
     return prepared_data
 
-def run_backtest(data, ticker, config, capital, risk_perc):
+def run_backtest(data, ticker, config, capital, risk_perc, direction='all'):
     """
-    Runs the backtest with CAPITAL and POSITION SIZING logic.
+    Runs the backtest with logic dictated by the strategy configuration
+    and an optional trade direction filter.
     """
     strategy_type = config['strategy_type']
     params = config['params']
     trades = []
     in_trade = False
 
-    print(f"\nRunning backtest for {ticker} using '{strategy_type}' logic...")
-    if len(data) < 2: return []
+    print(f"\nRunning backtest for {ticker} using '{strategy_type}' logic (Direction: {direction})...")
+    if len(data) < 2: return [], capital
 
     for i in range(1, len(data)):
         prev_candle = data.iloc[i-1]
         candle = data.iloc[i]
 
-        # --- Trade Management ---
         if in_trade:
             exit_price = 0
             if strategy_type == 'mean_reversion':
-                trade['take_profit'] = data.iloc[i][f"BBM_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"]
+                trade['take_profit'] = candle[f"BBM_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"]
 
             if trade['type'] == 'LONG':
-                if data.iloc[i]['Low'] <= trade['stop_loss']: exit_price = trade['stop_loss']
-                elif data.iloc[i]['High'] >= trade['take_profit']: exit_price = trade['take_profit']
+                if candle['Low'] <= trade['stop_loss']: exit_price = trade['stop_loss']
+                elif candle['High'] >= trade['take_profit']: exit_price = trade['take_profit']
             elif trade['type'] == 'SHORT':
-                if data.iloc[i]['High'] >= trade['stop_loss']: exit_price = trade['stop_loss']
-                elif data.iloc[i]['Low'] <= trade['take_profit']: exit_price = trade['take_profit']
+                if candle['High'] >= trade['stop_loss']: exit_price = trade['stop_loss']
+                elif candle['Low'] <= trade['take_profit']: exit_price = trade['take_profit']
 
             if exit_price != 0:
                 pnl = (exit_price - trade['entry_price']) * trade['shares'] if trade['type'] == 'LONG' else (trade['entry_price'] - exit_price) * trade['shares']
                 capital += pnl
-                trade.update({'exit_time': data.iloc[i]['Datetime'], 'exit_price': exit_price, 'pnl': pnl, 'capital_after': capital})
+                trade.update({'exit_time': candle['Datetime'], 'exit_price': exit_price, 'pnl': pnl, 'capital_after': capital})
                 trades.append(trade)
                 in_trade = False
 
-        # --- Entry Logic ---
         if not in_trade:
             entry_price, stop_loss, trade_type = 0, 0, None
 
@@ -139,25 +135,26 @@ def run_backtest(data, ticker, config, capital, risk_perc):
                 long_crossover = (prev_candle['EMA_fast'] < prev_candle['EMA_slow']) and (candle['EMA_fast'] > candle['EMA_slow'])
                 short_crossover = (prev_candle['EMA_fast'] > prev_candle['EMA_slow']) and (candle['EMA_fast'] < candle['EMA_slow'])
 
-                if (long_crossover and candle[f"ADX_{params['adx_period']}"] > params['adx_threshold'] and
-                    candle['Nifty_HTF_Uptrend'] and candle['RSI'] > params['rsi_level'] and
-                    candle['Volume'] > candle['Volume_SMA']):
+                if direction in ['all', 'bullish']:
+                    if (long_crossover and candle[f"ADX_{params['adx_period']}"] > params['adx_threshold'] and
+                        candle['Nifty_HTF_Uptrend'] and candle['RSI'] > params['rsi_level'] and
+                        candle['Volume'] > candle['Volume_SMA']):
+                        entry_price, stop_loss, trade_type = candle['Close'], candle['Low'], 'LONG'
 
-                    entry_price, stop_loss, trade_type = candle['Close'], candle['Low'], 'LONG'
-
-                elif (short_crossover and candle[f"ADX_{params['adx_period']}"] > params['adx_threshold'] and
-                      not candle['Nifty_HTF_Uptrend'] and candle['RSI'] < params['rsi_level'] and
-                      candle['Volume'] > candle['Volume_SMA']):
-
-                    entry_price, stop_loss, trade_type = candle['Close'], candle['High'], 'SHORT'
+                if direction in ['all', 'bearish']:
+                    if (short_crossover and candle[f"ADX_{params['adx_period']}"] > params['adx_threshold'] and
+                          not candle['Nifty_HTF_Uptrend'] and candle['RSI'] < params['rsi_level'] and
+                          candle['Volume'] > candle['Volume_SMA']):
+                        entry_price, stop_loss, trade_type = candle['Close'], candle['High'], 'SHORT'
 
             elif strategy_type == 'mean_reversion':
-                if (data.iloc[i]['Low'] <= data.iloc[i][f"BBL_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"] and
-                    data.iloc[i]['RSI'] < params['rsi_oversold']):
-                    entry_price, stop_loss, trade_type = data.iloc[i]['Close'], data.iloc[i]['Low'] - data.iloc[i]['ATR_14'], 'LONG'
-                elif (data.iloc[i]['High'] >= data.iloc[i][f"BBU_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"] and
-                      data.iloc[i]['RSI'] > params['rsi_overbought']):
-                    entry_price, stop_loss, trade_type = data.iloc[i]['Close'], data.iloc[i]['High'] + data.iloc[i]['ATR_14'], 'SHORT'
+                # Mean reversion is always bidirectional
+                if (candle['Low'] <= candle[f"BBL_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"] and
+                    candle['RSI'] < params['rsi_oversold']):
+                    entry_price, stop_loss, trade_type = candle['Close'], candle['Low'] - candle['ATR_14'], 'LONG'
+                elif (candle['High'] >= candle[f"BBU_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"] and
+                      candle['RSI'] > params['rsi_overbought']):
+                    entry_price, stop_loss, trade_type = candle['Close'], candle['High'] + candle['ATR_14'], 'SHORT'
 
             if entry_price > 0:
                 risk_per_share = abs(entry_price - stop_loss)
@@ -166,13 +163,12 @@ def run_backtest(data, ticker, config, capital, risk_perc):
                     shares = round(capital_to_risk / risk_per_share)
                     if shares > 0:
                         in_trade = True
-                        # --- Calculate Take Profit based on Strategy ---
                         if strategy_type == 'trend_follower':
                             take_profit = entry_price + (risk_per_share * params['risk_reward_ratio']) if trade_type == 'LONG' else entry_price - (risk_per_share * params['risk_reward_ratio'])
                         elif strategy_type == 'mean_reversion':
-                            take_profit = data.iloc[i][f"BBM_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"]
+                            take_profit = candle[f"BBM_{params['bbands_length']}_{params['bbands_std_dev']:.1f}"]
 
-                        trade = {'ticker': ticker, 'type': trade_type, 'entry_time': data.iloc[i]['Datetime'],
+                        trade = {'ticker': ticker, 'type': trade_type, 'entry_time': candle['Datetime'],
                                  'entry_price': entry_price, 'shares': shares, 'stop_loss': stop_loss,
                                  'take_profit': take_profit, 'capital_before': capital}
 
@@ -194,7 +190,7 @@ def generate_summary(trades_df, capital_at_start):
     print(f"Total P/L:        {trades_df['pnl'].sum():,.2f}")
     print(f"Total Number of Trades: {len(trades_df)}")
     print(f"Win Rate:         {(trades_df['pnl'] > 0).sum() / len(trades_df) * 100:.2f}%")
-    profit_factor = trades_df[trades_df['pnl'] > 0]['pnl'].sum() / abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum())
+    profit_factor = trades_df[trades_df['pnl'] > 0]['pnl'].sum() / abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum()) if abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum()) > 0 else np.inf
     print(f"Profit Factor:    {profit_factor:.2f}")
     print("----------------------------------\n")
 
@@ -204,16 +200,16 @@ def generate_summary(trades_df, capital_at_start):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Modular Backtesting Engine.')
     parser.add_argument('--strategy', type=str, required=True, help='Name of the strategy config file.')
+    parser.add_argument('--direction', type=str, default='all', choices=['all', 'bullish', 'bearish'], help='Trade direction for trend follower.')
     args = parser.parse_args()
 
     try:
         config = load_strategy_config(args.strategy)
 
-        # --- Portfolio and Run Parameters ---
         TICKERS = ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS']
         NIFTY_TICKER = '^NSEI'
-        START_DATE = '2025-08-01'
-        END_DATE = '2025-08-22'
+        START_DATE = '2025-07-01'
+        END_DATE = '2025-08-16'
         STARTING_CAPITAL = 20000.0
         RISK_PERCENTAGE = 0.02 # Risk 2% of capital per trade
 
@@ -224,11 +220,9 @@ if __name__ == '__main__':
         all_trades = []
         current_capital = STARTING_CAPITAL
 
-        # Note: This is a simplified sequential backtest. A more advanced engine
-        # would process all tickers simultaneously candle-by-candle.
         for ticker in TICKERS:
             if ticker in all_stock_data:
-                trades, current_capital = run_backtest(all_stock_data[ticker], ticker, config, current_capital, RISK_PERCENTAGE)
+                trades, current_capital = run_backtest(all_stock_data[ticker], ticker, config, current_capital, RISK_PERCENTAGE, direction=args.direction)
                 all_trades.extend(trades)
 
         if all_trades:
