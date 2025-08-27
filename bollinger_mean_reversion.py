@@ -21,8 +21,8 @@ import numpy as np
 # 1. CONFIGURABLE PARAMETERS
 # ==============================================================================
 TICKERS = ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS']
-START_DATE = '2025-08-01'
-END_DATE = '2025-08-22'
+START_DATE = '2025-08-20'
+END_DATE = '2025-08-23'
 INTERVAL = '5m'
 
 # Strategy Parameters
@@ -37,11 +37,10 @@ RSI_OVERSOLD = 30
 # ==============================================================================
 
 def fetch_data(tickers, start, end, interval):
-    """Fetches data for a list of tickers at a specific interval."""
-    print(f"Fetching {interval} data for: {tickers}")
-    # Download one by one for robustness
+    """Fetches data for a list of tickers, one by one for robustness."""
     all_data = {}
     for ticker in tickers:
+        print(f"Fetching {interval} data for: {ticker}")
         data = yf.download(
             tickers=ticker, start=start, end=end, interval=interval,
             auto_adjust=True, progress=False
@@ -52,17 +51,20 @@ def fetch_data(tickers, start, end, interval):
             print(f"Warning: No {interval} data for {ticker}.")
     return all_data
 
-def prepare_data(data, tickers):
+def prepare_data(data):
     """Calculates all necessary indicators for the mean reversion strategy."""
     prepared_data = {}
-    for ticker in tickers:
-        if ticker not in data:
-            print(f"Warning: Data for {ticker} not found. Skipping.")
-            continue
+    for ticker, stock_df in data.items():
+        print(f"Preparing data for {ticker}...")
 
-        stock_df = data[ticker].copy().dropna()
-        if stock_df.empty: continue
+        # Make a copy to avoid SettingWithCopyWarning
+        stock_df = stock_df.copy()
 
+        # Handle yfinance's inconsistent column structure
+        if isinstance(stock_df.columns, pd.MultiIndex):
+            stock_df.columns = stock_df.columns.droplevel(1)
+
+        # Calculate Indicators
         stock_df.ta.bbands(length=BBANDS_LENGTH, std=BBANDS_STD_DEV, append=True)
         stock_df['RSI'] = ta.rsi(stock_df['Close'], length=RSI_PERIOD)
         stock_df.ta.atr(length=14, append=True)
@@ -81,6 +83,7 @@ def run_backtest(data, ticker):
     """Runs the candle-by-candle backtest for the mean reversion strategy."""
     trades = []
     in_trade = False
+    trade = {}
 
     bbl_col = f'BBL_{BBANDS_LENGTH}_{BBANDS_STD_DEV:.1f}'
     bbm_col = f'BBM_{BBANDS_LENGTH}_{BBANDS_STD_DEV:.1f}'
@@ -136,7 +139,9 @@ def generate_summary(trades_df):
     winning_trades = trades_df[trades_df['pnl'] > 0]
     total_pl = trades_df['pnl'].sum()
     win_rate = (len(winning_trades) / total_trades) * 100 if total_trades > 0 else 0
-    profit_factor = winning_trades['pnl'].sum() / abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum()) if abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum()) > 0 else np.inf
+    gross_profit = winning_trades['pnl'].sum()
+    gross_loss = abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
     print("\n--- Backtesting Summary Report ---")
     print(f"Total Number of Trades: {total_trades}")
     print(f"Win Rate: {win_rate:.2f}%")
@@ -149,9 +154,8 @@ def generate_summary(trades_df):
 # ==============================================================================
 if __name__ == '__main__':
     try:
-        all_stock_data = {}
         data = fetch_data(TICKERS, START_DATE, END_DATE, INTERVAL)
-        all_stock_data = prepare_data(data, TICKERS)
+        all_stock_data = prepare_data(data)
 
         all_trades = []
         for ticker, stock_data in all_stock_data.items():
@@ -166,7 +170,7 @@ if __name__ == '__main__':
             print(trades_df.to_string())
             generate_summary(trades_df)
         else:
-            print("\nNo trades were executed across any of the tickers.")
+            print("\nNo trades were executed.")
 
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}")
